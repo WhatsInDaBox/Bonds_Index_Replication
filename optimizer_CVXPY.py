@@ -249,13 +249,18 @@ class BondPortfolioOptimizer:
         best_result = None
         best_objective = float('inf')
 
+        base_seed = kwargs.pop('random_state', 0)
+
         # tqdm = barre de progression pour suivre l'optimisation
         for num_bonds in tqdm(range(min_bonds, max_bonds + 1), desc="Optimisation de la taille du portefeuille"):
             trial_results = []
             # MC : plusieurs essais aléatoires par taille pour éviter les minimums locaux !
             for trial in range(trials_per_count):
-                seed = trial * 1000 + num_bonds
-                res = self.optimize_portfolio(num_bonds=num_bonds, random_state=seed, **kwargs)
+                if base_seed is not None:
+                    current_seed = base_seed + (trial * 10000) + num_bonds
+                else:
+                    current_seed = None
+                res = self.optimize_portfolio(num_bonds=num_bonds, random_state=current_seed, **kwargs)
                 if res['success']:
                     trial_results.append(res)
 
@@ -331,12 +336,13 @@ if __name__ == "__main__":
     # On teste des portefeuilles entre x et y bonds
     best_result, results_df = optimizer.find_optimal_bond_count(
         min_bonds=100,
-        max_bonds=361,
+        max_bonds=150,
         trials_per_count=20,  # nombre de simulations par taille (Monte Carlo)
         lambda_ytm=1.0,
         lambda_dur=1.0,
         lambda_maturity=1.0,
-        lambda_region=1.0
+        lambda_region=1.0,
+        random_state=42
     )
 
     if best_result is None:
