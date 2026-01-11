@@ -92,4 +92,7 @@ Nathan Thuille - [nathanthuille](https://www.linkedin.com/in/nathanthuille/) - t
 
 ## Acknowledgments
 
+* [Bloomberg methodology for bonds index](https://assets.bbhub.io/professional/sites/10/Bloomberg-Index-Publications-Fixed-Income-Index-Methodology.pdf)
+* [_Convex Optimization_, Stephen Boyd & Lieven Vandenberghe (2004)](https://stanford.edu/~boyd/cvxbook/bv_cvxbook.pdf)
 * [CVXPY documentation](https://www.cvxpy.org/tutorial/index.html)
+* [OSQP solver documentation](https://osqp.org/docs/parsers/cvxpy.html)
