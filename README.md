@@ -1,9 +1,9 @@
 <a id="readme-top"></a>
 
-  <h1 align="center">Bond Index Replication Engine</h3>
+  <h1 align="center">Bond Index replication tool</h3>
 
   <p align="center">
-    Automated fixed-income portfolio construction and index tracking using convex optimization.
+    Fixed-income portfolio construction and index tracking using convex optimization.
     <br />
     <br />
     <br />
