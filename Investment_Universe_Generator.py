@@ -295,3 +295,4 @@ if __name__ == "__main__":
 
     csv_filename = 'synthetic_bond_data.csv'
     bonds_df.to_csv(csv_filename, index=False)
+    print("Fichier 'synthetic_bond_data.csv' généré.")
