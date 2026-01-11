@@ -24,7 +24,7 @@ class BondDataGenerator:
 
         self.countries = {
             'North America': ['United States', 'Canada', 'Mexico'],
-            'Europe': ['Germany', 'France', 'United Kingdom', 'Italy', 'Spain', 'Netherlands', 'Switzerland','Turkey', 'Poland'],
+            'Europe': ['Germany', 'France', 'United Kingdom', 'Italy', 'Spain', 'Netherlands', 'Switzerland','Turkey', 'Poland', 'Russia'],
             'Asia': ['Japan', 'Australia', 'Singapore', 'South Korea', 'Hong Kong','India', 'China', 'Indonesia'],
             'Latin America': ['Brazil', 'Chile', 'Colombia', 'Peru'],
             'Middle East': ['Saudi Arabia', 'UAE', 'Qatar', 'Kuwait', 'Israel'],
@@ -44,17 +44,16 @@ class BondDataGenerator:
         self.currencies = ['USD', 'EUR', 'GBP', 'JPY', 'CHF', 'CAD', 'AUD']
 
     def _generate_isin(self, country_code, index):
-        """ On s'amuse a generer un code ISIN realiste, aucun interet ici si ce n'est pour lire les resultats sans
-        output les noms des bonds"""
+        """ On genere un code ISIN realiste pour lire les resultats"""
         random_part = ''.join(random.choices(string.ascii_uppercase + string.digits, k=9))
         check_digit = random.randint(0, 9)
         return f"{country_code}{random_part}{check_digit}"
 
     def _get_country_code(self, country):
-        """ Bien long """
+        """ Bien long, reduit et simplifie par rapport a un vrai indice """
         codes = {
             'United States': 'US', 'Canada': 'CA', 'Mexico': 'MX',
-            'Germany': 'DE', 'France': 'FR', 'United Kingdom': 'GB',
+            'Germany': 'DE', 'Israel':'IL', 'Russia':'RU', 'France': 'FR', 'United Kingdom': 'GB',
             'Italy': 'IT', 'Spain': 'ES', 'Netherlands': 'NL',
             'Switzerland': 'CH', 'Japan': 'JP', 'Australia': 'AU',
             'Singapore': 'SG', 'South Korea': 'KR', 'Hong Kong': 'HK',
@@ -237,7 +236,6 @@ class BondDataGenerator:
             stats['Value'].append(f"{rating_dist.loc[rating, 'Benchmark_Weight'] * 100:.2f}%")
 
         return pd.DataFrame(stats)
-
 
 if __name__ == "__main__":
     print("*" * 80)
