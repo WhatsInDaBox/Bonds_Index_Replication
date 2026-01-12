@@ -26,16 +26,16 @@
 
 ## About
 
-This project implements a tool for passive asset management, specifically designed to replicate the performance and risk characteristics of a broad bond index using a smaller subset of securities.
+This project implements a tool for passive asset management, specifically designed to replicate the performance and risk characteristics of a broad bond index using a smaller subset of securities
 
-Unlike simple sampling, this engine utilizes **Convex Optimization (CVXPY)** to mathematically minimize the tracking error against a benchmark while strictly adhering to investment constraints. It allows for dynamic exclusion of specific regions or issuers (e.g., ESG filtering or geopolitical sanctions) while automatically rebalancing the remaining portfolio to match the benchmark's key metrics.
+Unlike simple sampling, this engine utilizes **Convex Optimization (CVXPY)** to mathematically minimize the tracking error against a benchmark while strictly adhering to investment constraints. It allows for dynamic exclusion of specific regions or issuers (e.g., ESG filtering or geopolitical sanctions) while automatically rebalancing the remaining portfolio to match the benchmark's key metrics
 
 **Key Technical Features:**
-* **Convex optimization solver:** Minimizes the squared distance between the portfolio and benchmark across critical risk vectors (duration, YTM, maturity).
-* **Constraint management:** Enforces long-only positions (no short selling) and full capital allocation ($\sum w_i = 1$).
-* **Risk factors matching:** Targets precise exposure to modified Duration and yield-to-maturity to ensure interest rate sensitivity aligns with the index.
-* **Geopolitical/ESG filtering:** Exclude specific countries or regions (e.g., 'Asia', 'Russia') and re-optimize the remaining universe to maintain index correlation.
-* **Reporting:** Generates Excel-based reports with new allocation and geographic distribution.
+* **Convex optimization solver:** Minimizes the squared distance between the portfolio and benchmark across critical risk vectors (duration, YTM, maturity)
+* **Constraint management:** Enforces long-only positions (no short selling) and full capital allocation ($\sum w_i = 1$)
+* **Risk factors matching:** Targets precise exposure to modified Duration and yield-to-maturity to ensure interest rate sensitivity aligns with the index
+* **Geopolitical/ESG filtering:** Exclude specific countries or regions (e.g., 'Asia', 'Russia') and re-optimize the remaining universe to maintain index correlation
+* **Reporting:** Generates Excel-based reports with new allocation and geographic distribution
 
 ### Built With
 
@@ -47,7 +47,7 @@ Unlike simple sampling, this engine utilizes **Convex Optimization (CVXPY)** to 
 
 ## Getting Started
 
-To run the replication engine locally, follow these steps.
+To run the replication engine locally, follow these steps:
 
 ### Prerequisites
 
@@ -61,7 +61,7 @@ pip install pandas numpy cvxpy matplotlib openpyxl tqdm
 ```sh
 git clone https://github.com/WhatsInDaBox/Bonds_Index_Replication
 ```
-2. Place your source data (synthetic_bond_data.csv + country_liquidity_costs.csv) in the root directory (or generate them with the embedded scripts).
+2. Place your source data (synthetic_bond_data.csv + country_liquidity_costs.csv) in the root directory (or generate them with the embedded scripts)
 3. Verify data column headers match the _clean_data method requirements (ISIN, Country, YLD_YTM_MID, DUR_ADJ_MID, MTY_YEARS, Region, w ytm, w dur, w maturity, Benchmark_Weight, Execution_Cost_bps, Liquidity_Score)
 
 ### Usage
@@ -71,20 +71,20 @@ python optimizer_CVXPY.py
 ```
 
 ### Workflow
-1. **Ingestion:** The script loads the bond universe from the Excel source.
-2. **Benchmark calculation:** Calculates the market-cap-weighted averages of the full universe.
+1. **Ingestion:** The script loads the bond universe from the Excel source
+2. **Benchmark calculation:** Calculates the market-cap-weighted averages of the full universe
 3. **Optimization:** Runs the CVXPY solver to find optimal weights $w$ that minimize:
    $$\text{minimize} \quad || X_{port} - X_{bench} ||^2$$
    subject to:
    $$\sum w_i = 1, \quad w_i \ge 0$$
-4. **Reporting:** Outputs the optimized selection to Excel file.
+4. **Reporting:** Outputs the optimized selection to Excel file
 
-## Roadmap
+## Roadmap / Future implementation
 
-- [ ] Implement currency conversion matrix for multi-currency indices.
-- [ ] Add transaction cost constraints to the solver.
-- [ ] Integrate live market data feed (Bloomberg/Reuters API).
-- [ ] Add turnover constraints for monthly rebalancing.
+- [X] Add transaction cost constraints to the solver
+- [ ] Integrate live market data feed (Bloomberg/Reuters API)
+- [ ] Integrate existing portfolio in optimisation
+- [ ] Add turnover constraints for monthly rebalancing
 
 ## Contact
 
