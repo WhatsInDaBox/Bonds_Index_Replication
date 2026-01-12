@@ -61,8 +61,8 @@ pip install pandas numpy cvxpy matplotlib openpyxl tqdm
 ```sh
 git clone https://github.com/WhatsInDaBox/Bonds_Index_Replication
 ```
-2. Place your source data (e.g., synthetic_bond_data.xlsx) in the root directory.
-3. Verify data column headers match the _clean_data method requirements (ISIN, Country, YLD_YTM_MID, DUR_ADJ_MID, MTY_YEARS, Region)
+2. Place your source data (synthetic_bond_data.csv + country_liquidity_costs.csv) in the root directory (or generate them with the embedded scripts).
+3. Verify data column headers match the _clean_data method requirements (ISIN, Country, YLD_YTM_MID, DUR_ADJ_MID, MTY_YEARS, Region, w ytm, w dur, w maturity, Benchmark_Weight, Execution_Cost_bps, Liquidity_Score)
 
 ### Usage
 Run the main optimization script to generate the portfolio:
@@ -89,6 +89,7 @@ python optimizer_CVXPY.py
 ## Contact
 
 Nathan Thuille - [nathanthuille](https://www.linkedin.com/in/nathanthuille/) - thuille.nathan@icloud.com <br />
+Vincent Nguyen - [vincentnguyen](https://www.linkedin.com/in/vincent-nguyen-38b199172/)
 
 ## Acknowledgments
 
