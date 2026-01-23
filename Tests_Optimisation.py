@@ -216,7 +216,6 @@ class PortfolioValidator:
         self.optimizer.selection_pool = self.optimizer.data.copy()
         original_count = len(self.optimizer.selection_pool)
 
-        # Filtre manuel par région
         self.optimizer.selection_pool = self.optimizer.data[
             ~self.optimizer.data['Region'].isin(excluded_regions)
         ].copy()
@@ -253,7 +252,7 @@ class PortfolioValidator:
         holdings['Final_Weight'] = res['weights']
         active_holdings = holdings[holdings['Final_Weight'] > 1e-6]
 
-        # Check 1 : dust (pos < 1bp)
+        # Check 1 : poudre de perlinpinpin (pos < 1bp)
         min_w = active_holdings['Final_Weight'].min()
         print(f"   Plus petite position : {min_w * 100:.4f}%")
         if min_w < 0.0001:
@@ -310,11 +309,9 @@ if __name__ == "__main__":
     print("*" * 60)
     validator = PortfolioValidator()
 
-    # PERFORMANCE
     validator.run_frontier_analysis(min_n=50, max_n=300, step=50, trials=5)
     validator.run_stability_test(target_n=100, num_trials=30)
 
-    # TUNING
     validator.run_sampling_convergence_test(target_n=100, max_trials=50)
 
     validator.run_lambda_sensitivity_test(
