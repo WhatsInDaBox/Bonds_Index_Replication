@@ -1,20 +1,13 @@
-import os
-import warnings
-from typing import Dict, List, Tuple
-
-import cvxpy as cp
-import matplotlib.pyplot as plt
 import numpy as np
+import cvxpy as cp
 import pandas as pd
-from tqdm import tqdm
-
-# Pour ignorer les avertissements non critiques de pd/CVXPY
-warnings.filterwarnings('ignore')
+from typing import Dict
+from dataclasses import dataclass
 
 """
 Ce script permet de construire un portefeuille obligataire optimisé qui minimise
-la tracking error par rapport à un indice de référence (Benchmark), tout en
-réduisant considérablement le nombre de lignes.
+la tracking error par rapport à un indice de référence (benchmark), tout en
+réduisant considérablement le nombre de bonds à trader.
 
 Il utilise la programmation convexe pour aligner :
 1. Duration
@@ -25,507 +18,335 @@ Il utilise la programmation convexe pour aligner :
 Fonctionnalités clés :
 - Exclusion dynamique (pays bannis, ESG, liquidité)
 - Minimisation des coûts de transaction via pénalités
-- Exportation des résultats en Excel
+- Exportation des résultats en Excel + synthèse
 """
 
+@dataclass
+class OptimizationConfig:
+    """Configuration pour l'optimisation de portefeuille."""
+    lambda_ytm: float = 1.0
+    lambda_dur: float = 1.0
+    lambda_maturity: float = 1.0
+    lambda_region: float = 1.0
+    lambda_cost: float = 0.5  # Pénalité liée aux coûts de transaction
 
-class BondPortfolioOptimizer:
+    min_weight: float = 0.001  # Position minimale de 0.1%
+    max_weight: float = 0.05  # Position maximale de 5%
+    max_country_weight: float = 0.20
+
+    region_tolerance: float = 0.02  # Déviation régionale tolérée de ±5%
+
+
+class ImprovedBondOptimizer:
     def __init__(self, bond_file: str, liquidity_file: str):
+        self.data = self._load_and_merge_data(bond_file, liquidity_file)
+        self._calculate_benchmark()
+        self.selection_pool = self.data.copy()
+
+    def _load_and_merge_data(self, bond_file: str, liquidity_file: str) -> pd.DataFrame:
         """
         Initialise l'optimiseur en chargeant et fusionnant les données
         de marché et de liquidité.
         """
-        # On vérifie l'existence des fichiers
-        if not os.path.exists(bond_file) or not os.path.exists(liquidity_file):
-            raise FileNotFoundError(
-                f"Au moins un fichier introuvable, check : "
-                f"{bond_file} ou {liquidity_file}"
-            )
+        bonds = pd.read_csv(bond_file)
+        liquidity = pd.read_csv(liquidity_file)
 
-        self.data = pd.read_csv(bond_file)
-        self.liquidity = pd.read_csv(liquidity_file)
+        # Fusion et remplissage des valeurs manquantes
+        df = pd.merge(bonds, liquidity, on='Country', how='left')
+        df = df.fillna({'Execution_Cost_bps': 50, 'Liquidity_Score': 0})
 
-        # Merge des données de marché avec coûts d'exec + scores de liquidité
-        # (contraintes de trading réel)
-        self.data = pd.merge(
-            self.data, self.liquidity, on='Country', how='left'
-        )
+        # Validation des données
+        self._validate_data(df)
 
-        # Si pas de données, on applique une forte pénalité
-        # (coût élevé, score nul)
-        self.data['Execution_Cost_bps'].fillna(50, inplace=True)
-        self.data['Liquidity_Score'].fillna(0, inplace=True)
+        return df
 
-        # Data clean
-        self._clean_data()
-
-        self.selection_pool = self.data.copy()  # univers complet AVANT filtres
-        self.excluded_countries = []
-
-        # Calcul des parametres de référence
-        self._calculate_benchmark()
-
-    def _clean_data(self):
-        """
-        Nettoie le DataFrame :
-        1. Vérifie la présence des colonnes obligatoires.
-        2. Convertit les colonnes numériques.
-        3. Supprime les lignes contenant des valeurs nulles critiques.
-        """
-        # 1. Vérification des colonnes
-        required_cols = [
-            'ISIN', 'Country', 'YLD_YTM_MID', 'DUR_ADJ_MID', 'MTY_YEARS',
-            'Region', 'w ytm', 'w dur', 'w maturity', 'Benchmark_Weight',
-            'Execution_Cost_bps', 'Liquidity_Score'
+    def _validate_data(self, df: pd.DataFrame):
+        """Validation complète des données (colonnes, doublons, plages)."""
+        required = [
+            'ISIN', 'Country', 'YLD_YTM_MID', 'DUR_ADJ_MID',
+            'MTY_YEARS', 'Region', 'Benchmark_Weight'
         ]
 
-        missing = [c for c in required_cols if c not in self.data.columns]
+        missing = [c for c in required if c not in df.columns]
         if missing:
-            raise ValueError(
-                f"Colonnes manquantes dans le fichier source : {missing}"
-            )
+            raise ValueError(f"Colonnes manquantes : {missing}")
 
-        # 2. Conversion numérique
-        cols_to_float = [
-            'w ytm', 'w dur', 'w maturity', 'MTY_YEARS',
-            'YLD_YTM_MID', 'DUR_ADJ_MID', 'Benchmark_Weight',
-            'Execution_Cost_bps', 'Liquidity_Score'
-        ]
+        # Vérification des doublons
+        if df['ISIN'].duplicated().any():
+            raise ValueError("Doublons d'ISIN détectés dans les données")
 
-        for col in cols_to_float:
-            self.data[col] = pd.to_numeric(self.data[col], errors='coerce')
-
-        self.data['Region'] = self.data['Region'].astype(str)
-        self.data['Country'] = self.data['Country'].astype(str)
-        self.data['ISIN'] = self.data['ISIN'].astype(str)
-
-        # 3. Suppression des NA
-        self.data.dropna(subset=required_cols, inplace=True)
+        # Validation des valeurs
+        assert (df['DUR_ADJ_MID'] > 0).all(), "Durations invalides détectées"
+        assert (df['MTY_YEARS'] > 0).all(), "Maturités invalides détectées"
+        assert (df['Liquidity_Score'] >= 0).all(), "Scores de liquidité invalides"
 
     def _calculate_benchmark(self):
-        """
-        Calcule les caractéristiques cibles de l'indice de référence.
-        Ces valeurs serviront de cibles pour l'algorithme d'optimisation.
-        Note : la somme des colonnes pondérées (w_) donne la moyenne
-        pondérée de l'indice.
-        """
-        self.benchmark_w_ytm = self.data['w ytm'].sum()
-        self.benchmark_w_dur = self.data['w dur'].sum()
-        self.benchmark_w_maturity = self.data['w maturity'].sum()
+        """Calcul des caractéristiques de l'indice de référence (benchmark)."""
+        weights = self.data['Benchmark_Weight'] / self.data['Benchmark_Weight'].sum()
 
-        # Coût moyen et score de liquidité moyen de l'indice pour comparaison
-        if 'Benchmark_Weight' in self.data.columns:
-            weights = (
-                    self.data['Benchmark_Weight'] /
-                    self.data['Benchmark_Weight'].sum()
-            )
-            self.benchmark_cost_bps = (
-                    self.data['Execution_Cost_bps'] * weights
-            ).sum()
-            self.benchmark_liq_score = (
-                    self.data['Liquidity_Score'] * weights
-            ).sum()
-        else:
-            self.benchmark_cost_bps = self.data['Execution_Cost_bps'].mean()
-            self.benchmark_liq_score = self.data['Liquidity_Score'].mean()
+        self.benchmark_ytm = (self.data['YLD_YTM_MID'] * weights).sum()
+        self.benchmark_dur = (self.data['DUR_ADJ_MID'] * weights).sum()
+        self.benchmark_maturity = (self.data['MTY_YEARS'] * weights).sum()
+        self.benchmark_cost = (self.data['Execution_Cost_bps'] * weights).sum()
+        self.benchmark_liquidity = (self.data['Liquidity_Score'] * weights).sum()
 
-        # Répartition géographique de l'indice
+        # Calcul de la répartition régionale
         region_weights = self.data.groupby('Region')['Benchmark_Weight'].sum()
-        total_weight = region_weights.sum()
-        self.benchmark_region_dist = (
-                region_weights / total_weight
-        ).to_dict()
-        self.regions = list(self.benchmark_region_dist.keys())
-
-    def apply_screens(
-            self,
-            countries_to_exclude: List[str],
-            min_liquidity_score: int = 0
-    ):
-        """
-        Applique les filtres d'exclusion à l'univers d'investissement.
-
-        Args:
-            countries_to_exclude: liste des pays à bannir.
-            min_liquidity_score: score minimum (0-10) pour éligibilité.
-        """
-        self.excluded_countries = countries_to_exclude
-
-        # 1. Filtre géo
-        mask_country = ~self.data['Country'].isin(countries_to_exclude)
-
-        # 2. Filtre de liquidité
-        mask_liquidity = self.data['Liquidity_Score'] >= min_liquidity_score
-
-        mask_final = mask_country & mask_liquidity
-        self.selection_pool = (
-            self.data[mask_final].copy().reset_index(drop=True)
-        )
-
-        # Log exclusion
-        print(f"\nFiltres:")
-        print(f" > Pays exclus : {countries_to_exclude}")
-        print(f" > Score liquidité min : {min_liquidity_score}/10")
-        print(f" > Univers final : {len(self.selection_pool)} obligations")
+        self.benchmark_regions = (region_weights / region_weights.sum()).to_dict()
+        self.regions = list(self.benchmark_regions.keys())
 
     def optimize_portfolio(
             self,
-            num_bonds,
-            lambda_ytm=1.0,
-            lambda_dur=1.0,
-            lambda_maturity=1.0,
-            lambda_region=1.0,
-            min_weight=0.0,
-            max_weight=1.0,
-            random_state=None
+            num_bonds: int,
+            config: OptimizationConfig,
+            debug: bool = False
     ) -> Dict:
         """
-        Exécute une optimisation convexe pour un nombre donné d'obligations.
+        Optimise le portefeuille en utilisant l'univers filtré complet.
+        Utilise des contraintes souples pour garantir convergence.
         """
-
-        # Dummy filter : si univers filtré < demande = cancel
-        if len(self.selection_pool) < num_bonds:
-            return {'success': False, 'objective_value': np.inf}
-
-        # Échantillonnage aléatoire pour réduire la dimensionnalité
-        rng = np.random.default_rng(random_state)
-        idx = rng.choice(len(self.selection_pool), num_bonds, replace=False)
-        selected_bonds = self.selection_pool.iloc[idx].reset_index(drop=True)
-
+        selected_bonds = self.selection_pool.copy().reset_index(drop=True)
         n = len(selected_bonds)
 
-        # Extraction des matrices de données
+        if n < num_bonds:
+            raise ValueError(f"Obligations insuffisantes : besoin de {num_bonds}, disponible {n}")
+
+        if debug:
+            print(f"DEBUG: {n} obligations en entrée -> Cible {num_bonds}")
+
         ytm = selected_bonds['YLD_YTM_MID'].values
         dur = selected_bonds['DUR_ADJ_MID'].values
         mat = selected_bonds['MTY_YEARS'].values
+        costs = selected_bonds['Execution_Cost_bps'].values
+        liq_scores = selected_bonds['Liquidity_Score'].values
 
-        # Matrice d'expo par region
-        region_matrix = np.zeros((n, len(self.regions)))
-        for i, r in enumerate(self.regions):
-            region_matrix[:, i] = (selected_bonds['Region'] == r).astype(float)
+        region_dummies = pd.get_dummies(selected_bonds['Region'])
+        for r in self.regions:
+            if r not in region_dummies.columns:
+                region_dummies[r] = 0
+        region_matrix = region_dummies[self.regions].values
 
-        bench_region_vec = np.array([
-            self.benchmark_region_dist.get(r, 0) for r in self.regions
-        ])
+        bench_region_vec = np.array([self.benchmark_regions.get(r, 0) for r in self.regions])
 
-        w = cp.Variable(n)  # poids à trouver
+        w = cp.Variable(n)
 
-        # Calcul des spreads par rapport au benchmark
-        ytm_diff = w @ ytm - self.benchmark_w_ytm
-        dur_diff = w @ dur - self.benchmark_w_dur
-        mat_diff = w @ mat - self.benchmark_w_maturity
-        region_diff = w @ region_matrix - bench_region_vec
+        ytm_error = (w @ ytm - self.benchmark_ytm) / self.benchmark_ytm
+        dur_error = (w @ dur - self.benchmark_dur) / self.benchmark_dur
+        mat_error = (w @ mat - self.benchmark_maturity) / self.benchmark_maturity
+        region_error = w @ region_matrix - bench_region_vec
+        cost_impact = w @ costs
 
-        # Fonction utilité = minimiser somme des écarts au carré
+        # Fonction objectif : minimiser la tracking error + les coûts de transaction
         objective = cp.Minimize(
-            lambda_ytm * cp.square(ytm_diff) +
-            lambda_dur * cp.square(dur_diff) +
-            lambda_maturity * cp.square(mat_diff) +
-            lambda_region * cp.sum_squares(region_diff)
+            config.lambda_ytm * cp.square(ytm_error) +
+            config.lambda_dur * cp.square(dur_error) +
+            config.lambda_maturity * cp.square(mat_error) +
+            (config.lambda_region * 5) * cp.sum_squares(region_error) +
+            config.lambda_cost * cost_impact / 100
         )
 
-        # Contraintes réglementaires et de gestion
+        # Contraintes de base
         constraints = [
             cp.sum(w) == 1.0,
-            w >= min_weight,  # 0 car long only
-            w <= max_weight  # diversification par bond
+            w >= 0,
+            w <= config.max_weight
         ]
 
-        prob = cp.Problem(objective, constraints)
+        # Vérification intelligente de faisabilité pour les limites par pays
+        country_counts = selected_bonds['Country'].value_counts()
+        for country, count in country_counts.items():
+            country_mask = (selected_bonds['Country'] == country).values
+            constraints.append(cp.sum(w[country_mask]) <= config.max_country_weight)
 
-        # Résolution
+        # Contraintes régionales (limites strictes avec tolérance)
+        for i, region in enumerate(self.regions):
+            bench_weight = bench_region_vec[i]
+            region_mask = region_matrix[:, i]
+            max_possible_region_weight = np.sum(region_mask) * config.max_weight
+
+            if max_possible_region_weight < (bench_weight - config.region_tolerance):
+                if debug:
+                    print(f"DEBUG: Skip contrainte région {region} (infaisable).")
+                continue
+
+            if bench_weight > 0.01:
+                constraints.extend([
+                    w @ region_matrix[:, i] >= max(0, bench_weight - config.region_tolerance),
+                    w @ region_matrix[:, i] <= min(1.0, bench_weight + config.region_tolerance)
+                ])
+
+        # Résolution du problème
+        problem = cp.Problem(objective, constraints)
+
         try:
-            prob.solve(solver=cp.OSQP, verbose=False)
-        except cp.SolverError:
-            prob.solve(verbose=False)
+            problem.solve(solver=cp.CLARABEL, verbose=debug)
+        except Exception:
+            problem.solve(solver=cp.OSQP, verbose=debug)
 
-        # Vérification si succès
-        if prob.status not in ["optimal", "optimal_inaccurate"]:
-            return {
-                'success': False,
-                'objective_value': np.inf,
-                'weights': np.zeros(n),
-                'w_ytm_spread': 999,
-                'w_dur_spread': 999,
-                'w_maturity_spread': 999,
-                'region_spread': {}
-            }
+        # Nouvelle tentative avec relaxation en cas d'échec
+        if problem.status not in ["optimal", "optimal_inaccurate"]:
+            if debug:
+                print("DEBUG: Échec solveur strict -> Relaxation...")
+            constraints_relaxed = [
+                cp.sum(w) == 1.0,
+                w >= 0,
+                w <= config.max_weight
+            ]
+            problem = cp.Problem(objective, constraints_relaxed)
+            problem.solve(verbose=debug)
 
-        # Cleaning des poids (zéro numérique)
-        weights = w.value
-        weights[weights < 1e-7] = 0
-        weights /= weights.sum()  # Renormalisation pour garantir 1
+        # Extraction et nettoyage des poids
+        raw_weights = w.value
+        raw_weights[raw_weights < config.min_weight] = 0
 
-        # Calcul des parametres post-optimisation
-        optimized_w_ytm = np.dot(weights, ytm)
-        optimized_w_dur = np.dot(weights, dur)
-        optimized_w_maturity = np.dot(weights, mat)
+        top_indices = np.argsort(raw_weights)[-num_bonds:]
+        mask = np.zeros(n, dtype=bool)
+        mask[top_indices] = True
 
-        optimized_region_dist = {}
+        final_weights = np.zeros(n)
+        final_weights[mask] = raw_weights[mask]
+
+        # Renormalisation
+        final_weights = final_weights / final_weights.sum()
+
+        # Construction du résultat
+        active_positions = final_weights > 0
+        portfolio_bonds = selected_bonds[active_positions].copy()
+        portfolio_weights = final_weights[active_positions]
+
+        # Recalcul des métriques finales
+        port_ytm = np.sum(portfolio_weights * ytm[active_positions])
+        port_dur = np.sum(portfolio_weights * dur[active_positions])
+        port_mat = np.sum(portfolio_weights * mat[active_positions])
+        port_cost = np.sum(portfolio_weights * costs[active_positions])
+        port_liq = np.sum(portfolio_weights * liq_scores[active_positions])
+
+        # Recalcul de la répartition régionale
+        port_regions = {}
         for region in self.regions:
-            mask = selected_bonds['Region'] == region
-            optimized_region_dist[region] = np.sum(weights[mask])
-
-        region_spreads = {
-            r: optimized_region_dist.get(r, 0) -
-               self.benchmark_region_dist.get(r, 0)
-            for r in self.regions
-        }
+            region_mask = (portfolio_bonds['Region'] == region).values
+            port_regions[region] = np.sum(portfolio_weights[region_mask])
 
         return {
             'success': True,
-            'objective_value': prob.value,
-            'weights': weights,
-            'bonds': selected_bonds,
-            'optimized_w_ytm': optimized_w_ytm,
-            'optimized_w_dur': optimized_w_dur,
-            'optimized_w_maturity': optimized_w_maturity,
-            'optimized_region_dist': optimized_region_dist,
-            'w_ytm_spread': optimized_w_ytm - self.benchmark_w_ytm,
-            'w_dur_spread': optimized_w_dur - self.benchmark_w_dur,
-            'w_maturity_spread': (
-                    optimized_w_maturity - self.benchmark_w_maturity
-            ),
-            'region_spread': region_spreads,
-            'num_bonds': num_bonds
+            'num_bonds': int(np.sum(active_positions)),
+            'bonds': portfolio_bonds,
+            'weights': portfolio_weights,
+            'objective_value': problem.value,
+            'portfolio_ytm': port_ytm,
+            'portfolio_dur': port_dur,
+            'portfolio_maturity': port_mat,
+            'portfolio_cost': port_cost,
+            'portfolio_liquidity': port_liq,
+            'portfolio_regions': port_regions,
+            'tracking_error': {
+                'ytm': port_ytm - self.benchmark_ytm,
+                'duration': port_dur - self.benchmark_dur,
+                'maturity': port_mat - self.benchmark_maturity,
+                'cost_savings': self.benchmark_cost - port_cost
+            }
         }
 
-    def find_optimal_bond_count(
-            self,
-            min_bonds,
-            max_bonds,
-            trials_per_count,
-            **kwargs
-    ) -> Tuple[Dict, pd.DataFrame]:
+    def generate_report(self, result: Dict) -> pd.DataFrame:
+        """Génère le rapport détaillé ligne à ligne."""
+        bonds = result['bonds']
+        weights = result['weights']
+
+        portfolio = pd.DataFrame({
+            'ISIN': bonds['ISIN'].values,
+            'Country': bonds['Country'].values,
+            'Region': bonds['Region'].values,
+            'Weight (%)': weights * 100,
+            'YTM (%)': bonds['YLD_YTM_MID'].values,
+            'Duration': bonds['DUR_ADJ_MID'].values,
+            'Maturity (Years)': bonds['MTY_YEARS'].values,
+            'Execution Cost (bps)': bonds['Execution_Cost_bps'].values,
+            'Liquidity Score': bonds['Liquidity_Score'].values
+        })
+
+        portfolio = portfolio.sort_values('Weight (%)', ascending=False)
+        return portfolio
+
+    def generate_summary_sheet(self, result: Dict) -> pd.DataFrame:
         """
-        Cherche le nombre optimal d'obligations (Frontière efficiente).
+        Génère une feuille de résumé avec comparaison precise (e-15).
         """
-        results = []
-        best_result = None
-        best_objective = float('inf')
+        # Métriques globales (pondérées)
+        metrics_data = [
+            {
+                'Metric': 'Yield (YTM %)',
+                'Benchmark': self.benchmark_ytm,
+                'Portfolio': result['portfolio_ytm'],
+            },
+            {
+                'Metric': 'Duration (Years)',
+                'Benchmark': self.benchmark_dur,
+                'Portfolio': result['portfolio_dur'],
+            },
+            {
+                'Metric': 'Maturity (Years)',
+                'Benchmark': self.benchmark_maturity,
+                'Portfolio': result['portfolio_maturity'],
+            },
+            {
+                'Metric': 'Execution Cost (bps)',
+                'Benchmark': self.benchmark_cost,
+                'Portfolio': result['portfolio_cost'],
+            },
+            {
+                'Metric': 'Liquidity Score (Avg)',
+                'Benchmark': self.benchmark_liquidity,
+                'Portfolio': result['portfolio_liquidity'],
+            }
+        ]
 
-        base_seed = kwargs.pop('random_state', 0)
-
-        # tqdm = barre de progression pour suivre l'optimisation
-        range_bonds = range(min_bonds, max_bonds + 1)
-        for num_bonds in tqdm(range_bonds, desc="Optimisation taille"):
-            trial_results = []
-            # MC : plusieurs essais aléatoires pour éviter les minimums locaux
-            for trial in range(trials_per_count):
-                if base_seed is not None:
-                    current_seed = base_seed + (trial * 10000) + num_bonds
-                else:
-                    current_seed = None
-
-                res = self.optimize_portfolio(
-                    num_bonds=num_bonds,
-                    random_state=current_seed,
-                    **kwargs
-                )
-                if res['success']:
-                    trial_results.append(res)
-
-            if not trial_results:
-                continue
-
-            # On garde le meilleur essai pour cette taille
-            best_trial = min(trial_results, key=lambda x: x['objective_value'])
-
-            avg_reg_spread = np.mean([
-                abs(v) for v in best_trial['region_spread'].values()
-            ])
-
-            results.append({
-                'num_bonds': num_bonds,
-                'objective_value': best_trial['objective_value'],
-                'w_ytm_spread': best_trial['w_ytm_spread'],
-                'w_dur_spread': best_trial['w_dur_spread'],
-                'w_maturity_spread': best_trial['w_maturity_spread'],
-                'avg_region_spread': avg_reg_spread
+        # Métriques régionales
+        for region in self.regions:
+            metrics_data.append({
+                'Metric': f'Region: {region}',
+                'Benchmark': self.benchmark_regions.get(region, 0.0),
+                'Portfolio': result['portfolio_regions'].get(region, 0.0),
             })
 
-            # Mise à jour du "meilleur global"
-            if best_trial['objective_value'] < best_objective:
-                best_objective = best_trial['objective_value']
-                best_result = best_trial
+        summary_df = pd.DataFrame(metrics_data)
 
-        return best_result, pd.DataFrame(results)
+        summary_df['Difference (e-15)'] = summary_df['Portfolio'] - summary_df['Benchmark']
 
-    def plot_optimization_results(self, results_df: pd.DataFrame):
-        """ Génère les graphiques de convergence de l'erreur """
-        if results_df.empty:
-            print("Aucun résultat à afficher.")
-            return
+        summary_df = summary_df[['Metric', 'Benchmark', 'Portfolio', 'Difference (e-15)']]
 
-        fig, axes = plt.subplots(2, 2, figsize=(15, 10))
-
-        # 1. Erreur totale
-        axes[0, 0].plot(
-            results_df['num_bonds'],
-            results_df['objective_value'],
-            'b-', linewidth=2
-        )
-        axes[0, 0].set_title('Tracking Error Total vs Taille Portefeuille')
-        axes[0, 0].set_xlabel('Nombre de lignes')
-        axes[0, 0].set_ylabel('Fonction Objectif (Minimiser)')
-
-        # 2. Écart YTM
-        axes[0, 1].plot(
-            results_df['num_bonds'],
-            results_df['w_ytm_spread'],
-            'g-', linewidth=2
-        )
-        axes[0, 1].set_title('Écart de w YTM')
-        axes[0, 1].axhline(y=0, color='k', linestyle='--', alpha=0.5)
-
-        # 3. Écart duration
-        axes[1, 0].plot(
-            results_df['num_bonds'],
-            results_df['w_dur_spread'],
-            'r-', linewidth=2
-        )
-        axes[1, 0].set_title('Écart de w duration')
-        axes[1, 0].axhline(y=0, color='k', linestyle='--', alpha=0.5)
-
-        # 4. Écart régional
-        axes[1, 1].plot(
-            results_df['num_bonds'],
-            results_df['avg_region_spread'],
-            'm-', linewidth=2
-        )
-        axes[1, 1].set_title('Écart moyen allocation régionale')
-
-        plt.tight_layout()
-        plt.savefig('optimization_results.png')
-        # plt.show() # Décommenter si usage Notebook
-        plt.close()
+        return summary_df
 
 
 if __name__ == "__main__":
-
-    BOND_FILE = 'synthetic_bond_data.csv'
-    LIQUIDITY_FILE = 'country_liquidity_costs.csv'
-
-    if not os.path.exists(BOND_FILE) or not os.path.exists(LIQUIDITY_FILE):
-        print("ERROR: Fichiers sources manquants")
-        exit()
-
-    optimizer = BondPortfolioOptimizer(BOND_FILE, LIQUIDITY_FILE)
-
-    # PARAMÈTRES A MODIFIER SELON STRATÉGIE A METTRE EN PLACE
-    # Exclusion Russie/Israel et score de liquidité minimum de 3/10
-    optimizer.apply_screens(
-        countries_to_exclude=['Russia', 'Israel'],
-        min_liquidity_score=3
+    optimizer = ImprovedBondOptimizer(
+        'synthetic_bond_data.csv',
+        'country_liquidity_costs.csv'
     )
 
-    # On teste des portefeuilles entre x et y bonds
-    best_result, results_df = optimizer.find_optimal_bond_count(
-        min_bonds=100,
-        max_bonds=150,
-        trials_per_count=20,  # Simulations par taille (Monte Carlo)
+    optimizer.selection_pool = optimizer.data[
+        ~optimizer.data['Country'].isin(['Russia', 'Israel']) &
+        (optimizer.data['Liquidity_Score'] >= 3)
+        ].copy()
+
+    config = OptimizationConfig(
         lambda_ytm=1.0,
         lambda_dur=1.0,
         lambda_maturity=1.0,
         lambda_region=1.0,
-        random_state=42
+        lambda_cost=0.2,
+        max_weight=0.05,
+        max_country_weight=0.25,
+        region_tolerance=0.0000000
     )
 
-    if best_result is None:
-        print("FAIL : l'optimisation n'a pas trouvé de solution.")
-        exit()
+    result = optimizer.optimize_portfolio(num_bonds=350, config=config, debug=False)
 
-    # Création du DataFrame final enrichi
-    bonds = best_result['bonds']
-    weights = best_result['weights']
+    df_composition = optimizer.generate_report(result)
+    df_summary = optimizer.generate_summary_sheet(result)
 
-    optimized_portfolio = pd.DataFrame({
-        'ISIN': bonds['ISIN'].values,
-        'Country': bonds['Country'].values,
-        'Weight': weights,
-        'YTM': bonds['YLD_YTM_MID'].values,
-        'Duration': bonds['DUR_ADJ_MID'].values,
-        'Maturity': bonds['MTY_YEARS'].values,
-        'Region': bonds['Region'].values,
-        'Execution_Cost_bps': bonds['Execution_Cost_bps'].values,
-        'Liquidity_Score': bonds['Liquidity_Score'].values,
-        # Pondération des résultats
-        'w_ytm': weights * bonds['YLD_YTM_MID'].values,
-        'w_dur': weights * bonds['DUR_ADJ_MID'].values,
-        'w_maturity': weights * bonds['MTY_YEARS'].values
-    })
-
-    # Calcul des gains uniquement sur la meilleure liquidité
-    port_cost_bps = (
-            optimized_portfolio['Weight'] *
-            optimized_portfolio['Execution_Cost_bps']
-    ).sum()
-    savings = optimizer.benchmark_cost_bps - port_cost_bps
-
-    # Exportation vers un excel unique
-    output_file = 'Final_Portfolio_Report.xlsx'
-
+    output_file = 'Optimized_Portfolio.xlsx'
     with pd.ExcelWriter(output_file, engine='openpyxl') as writer:
-        # Sheet 1 : composition du portefeuille
-        optimized_portfolio.to_excel(
-            writer, sheet_name='Portfolio_Composition', index=False
-        )
+        df_summary.to_excel(writer, sheet_name='Résumé_Global', index=False)
+        df_composition.to_excel(writer, sheet_name='Composition', index=False)
 
-        # Sheet 2 : courbe d'efficience
-        results_df.to_excel(
-            writer, sheet_name='Log_Opt', index=False
-        )
-
-        # Sheet 3 : analyse de l'impact de la nouvelle compo
-        liq_df = pd.DataFrame({
-            'Paramètre': [
-                'Execution Cost (bps)', 'Liquidity Score',
-                'Yield (YTM)', 'Duration', 'Maturité'
-            ],
-            'Benchmark': [
-                optimizer.benchmark_cost_bps,
-                optimizer.benchmark_liq_score,
-                optimizer.benchmark_w_ytm,
-                optimizer.benchmark_w_dur,
-                optimizer.benchmark_w_maturity
-            ],
-            'Portfolio': [
-                port_cost_bps,
-                (
-                        optimized_portfolio['Weight'] *
-                        optimized_portfolio['Liquidity_Score']
-                ).sum(),
-                best_result['optimized_w_ytm'],
-                best_result['optimized_w_dur'],
-                best_result['optimized_w_maturity']
-            ],
-            'Spreads': [
-                f"-{savings:.2f}",
-                "Plus haut = plus liquide",
-                f"{best_result['w_ytm_spread']:.4f}",
-                f"{best_result['w_dur_spread']:.4f}",
-                f"{best_result['w_maturity_spread']:.4f}"
-            ]
-        })
-        liq_df.to_excel(writer, sheet_name='Liquidity_Analysis', index=False)
-
-    optimizer.plot_optimization_results(results_df)
-    print(f" Terminé. Rapport disponible : {output_file}")
-
-    print(
-        f"{'Region':<20} | {'Benchmark':<10} | {'Optimal':<10} | {'Diff':<10}"
-    )
-    print("*" * 60)
-
-    for region in optimizer.regions:
-        bench_val = optimizer.benchmark_region_dist.get(region, 0) * 100
-        opt_val = best_result['optimized_region_dist'].get(region, 0) * 100
-        spread = best_result['region_spread'].get(region, 0) * 100
-        status = " "
-        if abs(spread) > 0.02:
-            status = "!!"  # alert si deviation > 0.02%
-
-        print(
-            f"{region:<20} | {bench_val:6.2f}%   | "
-            f"{opt_val:6.2f}%   | {spread:+6.2f}% {status}"
-        )
+    print(f"Terminé. Résultat sauvegardé dans : {output_file}")

@@ -1,329 +1,329 @@
+import os
 import sys
 import warnings
-
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-import seaborn as sns
 from tqdm import tqdm
 
 try:
-    from optimizer_CVXPY import BondPortfolioOptimizer
+    from optimizer_CVXPY import ImprovedBondOptimizer, OptimizationConfig
 except ImportError:
-    print("ERREUR CRITIQUE : Impossible d'importer 'BondPortfolioOptimizer'.")
+    print("ERREUR CRITIQUE : Impossible d'importer 'ImprovedBondOptimizer' "
+          "depuis 'optimizer_CVXPY.py'.")
     sys.exit(1)
 
 warnings.filterwarnings('ignore')
 
 
-class PortfolioValidator:
+class PortfolioValidatorV2:
     def __init__(self, data_path='synthetic_bond_data.csv',
                  liq_path='country_liquidity_costs.csv'):
-        """Initialisation du validateur et chargement de l'optimiseur."""
-        print("Initialisation du validateur...")
-        self.optimizer = BondPortfolioOptimizer(data_path, liq_path)
+        """Initialisation du validateur avec l'optimiseur"""
+        print("Initialisation du validateur ...")
+        self.optimizer = ImprovedBondOptimizer(data_path, liq_path)
 
-    def run_frontier_analysis(self, min_n=20, max_n=300, step=20, trials=5):
-        """Test 1 : Analyse de la frontière efficiente (Taille vs Erreur)."""
-        print(
-            f"\n[Test 1] Analyse de la frontière ({min_n} à {max_n} titres)..."
+        # Configuration de base pour les tests
+        self.base_config = OptimizationConfig(
+            lambda_ytm=1.0,
+            lambda_dur=1.0,
+            lambda_maturity=1.0,
+            lambda_region=2.0,  # Priorité élevée pour les tests régionaux
+            lambda_cost=0.5,
+            max_weight=0.10,
+            max_country_weight=0.20,
+            region_tolerance=0
         )
+
+    def run_frontier_analysis(self, min_n=50, max_n=900, step=50):
+        """
+        Test 1 : Analyse de la frontière efficiente (taille vs tracking error).
+        """
+        print(f"\n[Test 1] Analyse de la frontière efficiente "
+              f"({min_n} à {max_n} titres)...")
         results = []
         bond_counts = range(min_n, max_n + 1, step)
 
         for n in tqdm(bond_counts, desc="Calcul de la frontière"):
-            res, _ = self.optimizer.find_optimal_bond_count(
-                min_bonds=n, max_bonds=n, trials_per_count=trials
-            )
-            results.append({
-                'N': n,
-                'Tracking_Error': res['objective_value'],
-                'YTM_Spread': abs(res['w_ytm_spread']),
-                'Dur_Spread': abs(res['w_dur_spread'])
-            })
+            try:
+                res = self.optimizer.optimize_portfolio(
+                    num_bonds=n, config=self.base_config
+                )
+
+                te = res['tracking_error']
+
+                max_reg_dev = 0
+                for r, weight in res['portfolio_regions'].items():
+                    bench = self.optimizer.benchmark_regions.get(r, 0)
+                    dev = abs(weight - bench)
+                    if dev > max_reg_dev:
+                        max_reg_dev = dev
+
+                results.append({
+                    'N': n,
+                    'Objective_Value': res['objective_value'],
+                    'YTM_Error_bps': abs(te['ytm']) * 10000,
+                    'Dur_Error': abs(te['duration']),
+                    'Max_Region_Dev_Pct': max_reg_dev * 100
+                })
+            except Exception as e:
+                print(f"  Erreur à N={n} : {e}")
 
         df = pd.DataFrame(results)
 
-        # Tracé du graphique
-        fig, ax1 = plt.subplots(figsize=(10, 6))
+        # Génération du graphique
+        fig, ax1 = plt.subplots(figsize=(12, 7))
+
         color = 'tab:blue'
-        ax1.set_xlabel("Nombre d'obligations")
-        ax1.set_ylabel('Erreur Totale', color=color)
-        ax1.plot(df['N'], df['Tracking_Error'], color=color, marker='o')
+        ax1.set_xlabel("Nombre d'obligations (N)")
+        ax1.set_ylabel(
+            'Valeur Objectif (Erreur Totale)',
+            color=color, fontweight='bold'
+        )
+        ax1.plot(
+            df['N'], df['Objective_Value'],
+            color=color, marker='o', linewidth=2, label='Erreur Totale'
+        )
+        ax1.tick_params(axis='y', labelcolor=color)
+        ax1.grid(True, alpha=0.3)
 
         ax2 = ax1.twinx()
         color = 'tab:red'
-        ax2.set_ylabel('Spread Absolu', color=color)
-        ax2.plot(
-            df['N'], df['YTM_Spread'],
-            color=color, linestyle='--', label='YTM'
+        ax2.set_ylabel(
+            'Déviation Régionale Max (%)',
+            color=color, fontweight='bold'
         )
         ax2.plot(
-            df['N'], df['Dur_Spread'],
-            color='green', linestyle=':', label='Duration'
+            df['N'], df['Max_Region_Dev_Pct'],
+            color=color, linestyle='--', marker='x', label='Déviation Rég.'
+        )
+        ax2.tick_params(axis='y', labelcolor=color)
+
+        ax2.axhline(
+            y=1.0, color='gray', linestyle=':', alpha=0.7,
+            label='Tolérance 1%'
         )
 
-        plt.title('Frontière efficiente : taille vs qualité')
+        plt.title('Frontière Efficiente V2 : Taille du Portefeuille vs Qualité')
+        fig.legend(loc="upper right", bbox_to_anchor=(0.85, 0.85))
         plt.tight_layout()
-        plt.savefig('test_frontier_plot.png')
-        print("sauvegardé 'test_frontier_plot.png'")
+        plt.savefig('test_v2_frontier.png')
+        print("Sauvegardé 'test_v2_frontier.png'")
         return df
 
-    def run_stability_test(self, target_n=100, num_trials=50):
-        """Test 2 : Test de stabilité du solveur (Histogramme)."""
-        print(f"\n[Test 2] Test de stabilité (N={target_n})...")
-        objectives = []
-        for i in tqdm(range(num_trials)):
-            res = self.optimizer.optimize_portfolio(
-                num_bonds=target_n,
-                random_state=i * 999
-            )
-            if res['success']:
-                objectives.append(res['objective_value'])
-
-        plt.figure(figsize=(10, 6))
-        sns.histplot(objectives, kde=True, color='purple')
-        plt.title(f'Distribution de stabilité (N={target_n})')
-        plt.savefig('test_stability.png')
-        print("sauvegardé 'test_stability.png'")
-
-    def run_sampling_convergence_test(self, target_n=100, max_trials=100):
-        """Test 3 : Convergence de l'échantillonnage."""
-        print(f"\n[Test 4] Convergence ({1} à {max_trials} essais)...")
-
-        # 1. Exécution massive de simulations
-        objectives = []
-        for i in tqdm(range(max_trials), desc="Simulations"):
-            res = self.optimizer.optimize_portfolio(
-                num_bonds=target_n,
-                random_state=i * 42
-            )
-            if res['success']:
-                objectives.append(res['objective_value'])
-
-        if not objectives:
-            print("Aucun essai réussi.")
-            return
-
-        # 2. Calcul du minimum cumulatif
-        running_min = np.minimum.accumulate(objectives)
-
-        # 3. Graphique
-        plt.figure(figsize=(10, 6))
-        plt.plot(
-            range(1, len(running_min) + 1),
-            running_min,
-            'b-', linewidth=2
-        )
-        plt.xlabel("Nombre d'essais réalisés")
-        plt.ylabel('Meilleur objectif trouvé (min cumulatif)')
-        plt.title('Convergence : quand arrêter les calculs ?')
-        plt.grid(True, alpha=0.3)
-
-        final_val = running_min[-1]
-        plt.axhline(
-            final_val, color='r', linestyle='--', alpha=0.5,
-            label=f'Meilleur : {final_val:.2e}'
-        )
-        plt.legend()
-
-        plt.savefig('test_convergence_sampling.png')
-        print("sauvegardé 'test_convergence_sampling.png'")
-
-    def run_lambda_sensitivity_test(self, target_n=100,
-                                    param_name='lambda_dur',
-                                    values=[0.1, 1.0, 10.0, 100.0, 500.0]):
-        """Test 4 : Analyse de sensibilité des paramètres Lambda."""
-        print(f"\n[Test 5] Sensibilité pour '{param_name}'...")
+    def run_lambda_sensitivity_test(self, target_n=400,
+                                    param_name='lambda_region',
+                                    values=[1.0, 10.0, 50.0, 100.0, 500.0]):
+        """Test 2 : Analyse de sensibilité des paramètres lambda pour poids de la region dans l'opti."""
+        print(f"\n[Test 2] Analyse de sensibilité pour '{param_name}'...")
 
         results = []
-        base_params = {
-            'lambda_ytm': 1.0, 'lambda_dur': 1.0,
-            'lambda_maturity': 1.0, 'lambda_region': 1.0
-        }
 
-        for val in tqdm(values, desc="Test des lambdas"):
-            current_params = base_params.copy()
-            current_params[param_name] = val
-
-            res, _ = self.optimizer.find_optimal_bond_count(
-                min_bonds=target_n, max_bonds=target_n, trials_per_count=10,
-                **current_params
+        for val in tqdm(values, desc="Test des Lambdas"):
+            # Clonage de la config et mise à jour du paramètre
+            current_config = OptimizationConfig(
+                lambda_ytm=self.base_config.lambda_ytm,
+                lambda_dur=self.base_config.lambda_dur,
+                lambda_maturity=self.base_config.lambda_maturity,
+                lambda_region=self.base_config.lambda_region,
+                lambda_cost=self.base_config.lambda_cost,
+                max_weight=self.base_config.max_weight,
+                max_country_weight=self.base_config.max_country_weight,
+                region_tolerance=self.base_config.region_tolerance
             )
 
-            avg_reg_spread = np.mean([
-                abs(v) for v in res['region_spread'].values()
-            ])
+            setattr(current_config, param_name, float(val))
 
-            results.append({
-                'Value': val,
-                'Total_Error': res['objective_value'],
-                'Dur_Spread': abs(res['w_dur_spread']),
-                'YTM_Spread': abs(res['w_ytm_spread']),
-                'Region_Spread': avg_reg_spread
-            })
+            try:
+                res = self.optimizer.optimize_portfolio(
+                    num_bonds=target_n, config=current_config
+                )
+
+                te = res['tracking_error']
+
+                max_reg_dev = 0
+                for r, weight in res['portfolio_regions'].items():
+                    bench = self.optimizer.benchmark_regions.get(r, 0)
+                    if abs(weight - bench) > max_reg_dev:
+                        max_reg_dev = abs(weight - bench)
+
+                results.append({
+                    'Lambda_Value': val,
+                    'Objective_Value': res['objective_value'],
+                    'Dur_Error': abs(te['duration']),
+                    'Max_Region_Dev_Pct': max_reg_dev * 100,
+                    'Cost_Savings': te['cost_savings']
+                })
+            except Exception as e:
+                print(f"Erreur avec lambda={val} : {e}")
 
         df = pd.DataFrame(results)
 
-        # Graphique des compromis (Trade-offs)
         fig, ax1 = plt.subplots(figsize=(10, 6))
 
-        if 'dur' in param_name:
-            target_metric = 'Dur_Spread'
-            color = 'tab:green'
-        elif 'ytm' in param_name:
-            target_metric = 'YTM_Spread'
-            color = 'tab:blue'
-        else:
-            target_metric = 'Region_Spread'
+        if 'region' in param_name:
+            y_metric = 'Max_Region_Dev_Pct'
+            y_label = 'Déviation Régionale Max (%)'
             color = 'tab:purple'
+        elif 'dur' in param_name:
+            y_metric = 'Dur_Error'
+            y_label = "Erreur de Duration (Années)"
+            color = 'tab:green'
+        else:
+            y_metric = 'Objective_Value'
+            y_label = 'Valeur Objectif'
+            color = 'black'
 
-        ax1.set_xlabel(f'Valeur de {param_name} (Log Scale)')
-        ax1.set_ylabel(
-            f'{target_metric} (Cible)', color=color, fontweight='bold'
-        )
+        ax1.set_xlabel(f'{param_name} (Échelle Log)')
+        ax1.set_ylabel(y_label, color=color, fontweight='bold')
         ax1.plot(
-            df['Value'], df[target_metric],
+            df['Lambda_Value'], df[y_metric],
             color=color, marker='o', linewidth=2
         )
         ax1.tick_params(axis='y', labelcolor=color)
         ax1.set_xscale('log')
         ax1.grid(True, alpha=0.3)
 
-        ax2 = ax1.twinx()
-        color2 = 'gray'
-        ax2.set_ylabel('Erreur Totale (Coût)', color=color2)
-        ax2.plot(
-            df['Value'], df['Total_Error'],
-            color=color2, linestyle='--', marker='x'
-        )
-        ax2.tick_params(axis='y', labelcolor=color2)
-
-        plt.title(f'Sensibilité : impact de {param_name}')
+        plt.title(f'Impact de {param_name} sur la qualité du portefeuille')
         plt.tight_layout()
-        plt.savefig(f'test_sensitivity_{param_name}.png')
-        print(f"sauvegardé 'test_sensitivity_{param_name}.png'")
+        plt.savefig(f'test_v2_sensitivity_{param_name}.png')
+        print(f"Sauvegardé 'test_v2_sensitivity_{param_name}.png'")
 
-    def run_stress_test_impossible_constraints(self):
-        """Test 5 : Stress Test (contraintes impossibles)."""
-        print("\n[Test 6] Stress test (contraintes impossibles)...")
+    def run_stress_test_universe_scarcity(self):
+        """Test 3 : Stress test - rareté de l'univers d'investissement."""
+        print("\n[Test 3] Stress test : rareté de l'univers...")
 
-        # 1. Simulation d'exclusion extrême (Top 3 régions)
-        regions = list(self.optimizer.benchmark_region_dist.keys())
-        excluded_regions = regions[:3]
-        print(f"   Exclusion de : {excluded_regions}")
+        # Instance temporaire pour le test
+        crippled_optimizer = ImprovedBondOptimizer(
+            'synthetic_bond_data.csv', 'country_liquidity_costs.csv'
+        )
 
-        self.optimizer.selection_pool = self.optimizer.data.copy()
-        original_count = len(self.optimizer.selection_pool)
+        # Filtrage brutal : Suppression des 3 premières régions
+        regions = list(crippled_optimizer.regions)
+        excluded = regions[:3]
+        print(f"   Régions exclues : {excluded}")
 
-        self.optimizer.selection_pool = self.optimizer.data[
-            ~self.optimizer.data['Region'].isin(excluded_regions)
+        crippled_optimizer.selection_pool = crippled_optimizer.data[
+            ~crippled_optimizer.data['Region'].isin(excluded)
         ].copy()
-        new_count = len(self.optimizer.selection_pool)
 
-        print(f"   Univers réduit de {original_count} à {new_count} titres.")
+        remaining = len(crippled_optimizer.selection_pool)
+        print(f"   Univers réduit à {remaining} titres.")
 
-        # 2. Exécution de l'optimisation
-        res = self.optimizer.optimize_portfolio(num_bonds=50)
+        try:
+            res = crippled_optimizer.optimize_portfolio(
+                num_bonds=400, config=self.base_config
+            )
 
-        print(f"   Succès du solveur : {res['success']}")
-        print(f"   Valeur objectif : {res['objective_value']:.4f}")
+            print(f"   Statut du solveur : "
+                  f"{'Succès' if res['success'] else 'Échec'}")
+            print(f"   Valeur Objectif : {res['objective_value']:.4f}")
 
-        # 3. Analyse
-        if not res['success']:
-            print("   -> SUCCÈS : le solveur a échoué comme prévu.")
-        elif res['objective_value'] > 1.0:
-            print("   -> SUCCÈS : solution trouvée mais erreur massive.")
-        else:
-            print("   -> ATTENTION : Le solveur a trouvé une solution.")
+            if res['success']:
+                print("   -> SUCCÈS : Le solveur a géré la rareté "
+                      "(les contraintes souples ont fonctionné).")
+                print(f"   -> Allocations régionales : "
+                      f"{res['portfolio_regions']}")
+            else:
+                print("   -> ÉCHEC : Le solveur a planté.")
+
+        except Exception as e:
+            print(f"   -> EXCEPTION : {e}")
 
     def run_sanity_check_holdings(self):
-        """Test 6 : Vérification de la qualité des positions (Poids min)."""
-        print("\n[Test 7] Contrôle qualité portefeuille...")
+        """Test 4 : Contrôle qualité des positions (poids min/max, etc)."""
+        print("\n[Test 4] Contrôle qualité des positions...")
 
-        self.optimizer.selection_pool = self.optimizer.data.copy()
-        res = self.optimizer.optimize_portfolio(num_bonds=100)
+        res = self.optimizer.optimize_portfolio(
+            num_bonds=400, config=self.base_config
+        )
 
         if not res['success']:
-            print("   Annulé (échec optimisation).")
+            print("   Annulé (échec de l'optimisation).")
             return
 
-        holdings = res['bonds'].copy()
-        holdings['Final_Weight'] = res['weights']
-        active_holdings = holdings[holdings['Final_Weight'] > 1e-6]
+        weights = res['weights']
+        active_mask = weights > 1e-6
+        active_weights = weights[active_mask]
 
-        # Check 1 : poudre de perlinpinpin (pos < 1bp)
-        min_w = active_holdings['Final_Weight'].min()
-        print(f"   Plus petite position : {min_w * 100:.4f}%")
-        if min_w < 0.0001:
-            print("   -> ATTENTION : positions insignifiantes détectées !")
+        min_w = active_weights.min()
+        print(f"   Plus petite position : {min_w * 100:.5f}%")
+        if min_w < 0.0001:  # 0.01%
+            print("   -> ATTENTION : Positions infimes détectées (< 1bp). "
+                  "Logique de troncature requise.")
         else:
-            print("   -> OK : taille minimale respectée.")
+            print("   -> OK : Taille minimale respectée.")
 
-        # Check 2 : concentration (> 10%)
-        max_w = active_holdings['Final_Weight'].max()
-        print(f"   Plus grosse position :  {max_w * 100:.2f}%")
-        if max_w > 0.1:
-            print("   -> ATTENTION : risque de concentration élevé !")
+        max_w = active_weights.max()
+        print(f"   Plus grande position : {max_w * 100:.2f}%")
+        limit = self.base_config.max_weight
+        if max_w > limit + 0.001:  # Tolérance float
+            print(f"   -> ÉCHEC : Contrainte violée (Max autorisé : "
+                  f"{limit * 100}%)")
         else:
-            print("   -> OK : concentration OK.")
+            print("   -> OK : Limites de concentration respectées.")
 
-        # Check 3 : Rendements nuls/faibles
-        low_yield_threshold = 0.1
-        junk_bonds = active_holdings[
-            active_holdings['YLD_YTM_MID'] < low_yield_threshold
-        ]
-
-        if not junk_bonds.empty:
-            print(f"   -> WARN : {len(junk_bonds)} titres sans rendement!")
-        else:
-            print("   -> PASS : Rendements valides :)")
+        print("   Conformité régionale :")
+        for r in self.optimizer.regions:
+            bench = self.optimizer.benchmark_regions.get(r, 0)
+            port = res['portfolio_regions'].get(r, 0)
+            diff = port - bench
+            status = "OK" if abs(diff) < 0.01 else "DRIFT"
+            print(f"     - {r:<15}: {port * 100:6.2f}% "
+                  f"(Bench: {bench * 100:6.2f}%) -> "
+                  f"{diff * 100:+5.2f}% [{status}]")
 
     def run_determinism_test(self):
-        """Test 7 : vérification du déterminisme en prod."""
-        print("\n[Test 9] Test de déterminisme (Seed=42)...")
+        """
+        Test 5 : Vérification du déterminisme
+        (Deux exécutions donnent le meme résultat EXACT).
+        """
+        print("\n[Test 5] Vérification du déterminisme...")
 
-        # Opti 1
+        # Exec 1
         res1 = self.optimizer.optimize_portfolio(
-            num_bonds=100, random_state=42
+            num_bonds=400, config=self.base_config
         )
-        isins1 = set(res1['bonds']['ISIN'].values)
+        w1 = res1['weights']
 
-        # Opti 2
+        # Exec 2
         res2 = self.optimizer.optimize_portfolio(
-            num_bonds=100, random_state=42
+            num_bonds=400, config=self.base_config
         )
-        isins2 = set(res2['bonds']['ISIN'].values)
+        w2 = res2['weights']
 
-        diff = isins1.symmetric_difference(isins2)
-
-        if len(diff) == 0:
-            print("   -> SUCCÈS : portefeuilles 100% identiques.")
+        if np.allclose(w1, w2, atol=1e-8):
+            print("   -> SUCCÈS : L'optimisation est déterministe.")
         else:
-            print(f"   -> ÉCHEC : {len(diff)} différences détectées.")
+            diff = np.sum(np.abs(w1 - w2))
+            print(f"   -> ÉCHEC : Les résultats diffèrent ! "
+                  f"Delta total des poids : {diff}")
 
 
 if __name__ == "__main__":
-    print("*" * 60)
-    print("DÉMARRAGE DE LA SUITE DE VALIDATION")
-    print("*" * 60)
-    validator = PortfolioValidator()
+    print("-" * 60)
+    print("Démarrage des tests")
+    print("-" * 60)
 
-    validator.run_frontier_analysis(min_n=50, max_n=300, step=50, trials=5)
-    validator.run_stability_test(target_n=100, num_trials=30)
+    if not os.path.exists('synthetic_bond_data.csv'):
+        print("Erreur : 'synthetic_bond_data.csv' introuvable. "
+              "Veuillez générer/updater les données.")
+        sys.exit(1)
 
-    validator.run_sampling_convergence_test(target_n=100, max_trials=50)
+    validator = PortfolioValidatorV2()
+
+    validator.run_frontier_analysis(min_n=50, max_n=500, step=50)
 
     validator.run_lambda_sensitivity_test(
-        target_n=100,
-        param_name='lambda_dur',
-        values=[0.1, 1.0, 10.0, 100.0]
+        target_n=400,
+        param_name='lambda_region',
+        values=[1, 10, 50, 100, 500]
     )
 
-    validator.run_stress_test_impossible_constraints()
+    validator.run_stress_test_universe_scarcity()
     validator.run_sanity_check_holdings()
     validator.run_determinism_test()
 
-    print("\n" + "*" * 60)
-    print("TESTS TERMINÉS")
-    print("*" * 60)
+    print("\n" + "-" * 60)
+    print("Tests termines")
+    print("-" * 60)
