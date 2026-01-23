@@ -88,7 +88,7 @@ class PortfolioValidator:
         print("sauvegardé 'test_stability.png'")
 
     def run_sampling_convergence_test(self, target_n=100, max_trials=100):
-        """Test 4 : Convergence de l'échantillonnage."""
+        """Test 3 : Convergence de l'échantillonnage."""
         print(f"\n[Test 4] Convergence ({1} à {max_trials} essais)...")
 
         # 1. Exécution massive de simulations
@@ -133,7 +133,7 @@ class PortfolioValidator:
     def run_lambda_sensitivity_test(self, target_n=100,
                                     param_name='lambda_dur',
                                     values=[0.1, 1.0, 10.0, 100.0, 500.0]):
-        """Test 5 : Analyse de sensibilité des paramètres Lambda."""
+        """Test 4 : Analyse de sensibilité des paramètres Lambda."""
         print(f"\n[Test 5] Sensibilité pour '{param_name}'...")
 
         results = []
@@ -205,7 +205,7 @@ class PortfolioValidator:
         print(f"sauvegardé 'test_sensitivity_{param_name}.png'")
 
     def run_stress_test_impossible_constraints(self):
-        """Test 6 : Stress Test (contraintes impossibles)."""
+        """Test 5 : Stress Test (contraintes impossibles)."""
         print("\n[Test 6] Stress test (contraintes impossibles)...")
 
         # 1. Simulation d'exclusion extrême (Top 3 régions)
@@ -238,7 +238,7 @@ class PortfolioValidator:
             print("   -> ATTENTION : Le solveur a trouvé une solution.")
 
     def run_sanity_check_holdings(self):
-        """Test 7 : Vérification de la qualité des positions (Poids min)."""
+        """Test 6 : Vérification de la qualité des positions (Poids min)."""
         print("\n[Test 7] Contrôle qualité portefeuille...")
 
         self.optimizer.selection_pool = self.optimizer.data.copy()
@@ -280,7 +280,7 @@ class PortfolioValidator:
             print("   -> PASS : Rendements valides :)")
 
     def run_determinism_test(self):
-        """Test 8 : vérification du déterminisme en prod."""
+        """Test 7 : vérification du déterminisme en prod."""
         print("\n[Test 9] Test de déterminisme (Seed=42)...")
 
         # Opti 1
@@ -325,5 +325,5 @@ if __name__ == "__main__":
     validator.run_determinism_test()
 
     print("\n" + "*" * 60)
-    print("TOUS LES TESTS TERMINÉS")
+    print("TESTS TERMINÉS")
     print("*" * 60)
