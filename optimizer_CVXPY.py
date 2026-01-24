@@ -4,6 +4,7 @@ import pandas as pd
 from typing import Dict
 from dataclasses import dataclass
 
+
 """
 Ce script permet de construire un portefeuille obligataire optimisé qui minimise
 la tracking error par rapport à un indice de référence (benchmark), tout en
@@ -21,6 +22,7 @@ Fonctionnalités clés :
 - Exportation des résultats en Excel + synthèse
 """
 
+
 @dataclass
 class OptimizationConfig:
     """Configuration pour l'optimisation de portefeuille."""
@@ -34,7 +36,7 @@ class OptimizationConfig:
     max_weight: float = 0.05  # Position maximale de 5%
     max_country_weight: float = 0.20
 
-    region_tolerance: float = 0.02  # Déviation régionale tolérée de ±5%
+    region_tolerance: float = 0.02  # Déviation régionale tolérée de ±2%
 
 
 class ImprovedBondOptimizer:
@@ -43,10 +45,12 @@ class ImprovedBondOptimizer:
         self._calculate_benchmark()
         self.selection_pool = self.data.copy()
 
-    def _load_and_merge_data(self, bond_file: str, liquidity_file: str) -> pd.DataFrame:
+    def _load_and_merge_data(
+        self, bond_file: str, liquidity_file: str
+    ) -> pd.DataFrame:
         """
-        Initialise l'optimiseur en chargeant et fusionnant les données
-        de marché et de liquidité.
+        Chargement et fusion des données obligataires et de liquidité avec
+        validation.
         """
         bonds = pd.read_csv(bond_file)
         liquidity = pd.read_csv(liquidity_file)
@@ -75,24 +79,34 @@ class ImprovedBondOptimizer:
         if df['ISIN'].duplicated().any():
             raise ValueError("Doublons d'ISIN détectés dans les données")
 
-        # Validation des valeurs
+        # Validation des plages de valeurs
         assert (df['DUR_ADJ_MID'] > 0).all(), "Durations invalides détectées"
         assert (df['MTY_YEARS'] > 0).all(), "Maturités invalides détectées"
-        assert (df['Liquidity_Score'] >= 0).all(), "Scores de liquidité invalides"
+        assert (df['Liquidity_Score'] >= 0).all(), \
+            "Scores de liquidité invalides"
 
     def _calculate_benchmark(self):
         """Calcul des caractéristiques de l'indice de référence (benchmark)."""
-        weights = self.data['Benchmark_Weight'] / self.data['Benchmark_Weight'].sum()
+        weights = (
+            self.data['Benchmark_Weight'] /
+            self.data['Benchmark_Weight'].sum()
+        )
 
         self.benchmark_ytm = (self.data['YLD_YTM_MID'] * weights).sum()
         self.benchmark_dur = (self.data['DUR_ADJ_MID'] * weights).sum()
         self.benchmark_maturity = (self.data['MTY_YEARS'] * weights).sum()
-        self.benchmark_cost = (self.data['Execution_Cost_bps'] * weights).sum()
-        self.benchmark_liquidity = (self.data['Liquidity_Score'] * weights).sum()
+        self.benchmark_cost = (
+            self.data['Execution_Cost_bps'] * weights
+        ).sum()
+        self.benchmark_liquidity = (
+            self.data['Liquidity_Score'] * weights
+        ).sum()
 
-        # Calcul de la répartition régionale
+        # Répartition régionale
         region_weights = self.data.groupby('Region')['Benchmark_Weight'].sum()
-        self.benchmark_regions = (region_weights / region_weights.sum()).to_dict()
+        self.benchmark_regions = (
+            region_weights / region_weights.sum()
+        ).to_dict()
         self.regions = list(self.benchmark_regions.keys())
 
     def optimize_portfolio(
@@ -102,41 +116,52 @@ class ImprovedBondOptimizer:
             debug: bool = False
     ) -> Dict:
         """
-        Optimise le portefeuille en utilisant l'univers filtré complet.
-        Utilise des contraintes souples pour garantir convergence.
+        Optimise le portefeuille en utilisant l'univers filtré COMPLET.
         """
+        # UTILISATION DE L'UNIVERS COMPLET
         selected_bonds = self.selection_pool.copy().reset_index(drop=True)
         n = len(selected_bonds)
 
         if n < num_bonds:
-            raise ValueError(f"Obligations insuffisantes : besoin de {num_bonds}, disponible {n}")
+            raise ValueError(
+                f"Obligations insuffisantes : besoin de {num_bonds}, "
+                f"disponible {n}"
+            )
 
         if debug:
             print(f"DEBUG: {n} obligations en entrée -> Cible {num_bonds}")
 
+        # Extraction des caractéristiques des obligations
         ytm = selected_bonds['YLD_YTM_MID'].values
         dur = selected_bonds['DUR_ADJ_MID'].values
         mat = selected_bonds['MTY_YEARS'].values
         costs = selected_bonds['Execution_Cost_bps'].values
         liq_scores = selected_bonds['Liquidity_Score'].values
 
+        # Création de la matrice régionale
         region_dummies = pd.get_dummies(selected_bonds['Region'])
         for r in self.regions:
             if r not in region_dummies.columns:
                 region_dummies[r] = 0
         region_matrix = region_dummies[self.regions].values
 
-        bench_region_vec = np.array([self.benchmark_regions.get(r, 0) for r in self.regions])
+        bench_region_vec = np.array([
+            self.benchmark_regions.get(r, 0) for r in self.regions
+        ])
 
+        # Variables d'optimisation
         w = cp.Variable(n)
 
+        # Calcul des déviations (Tracking Error)
         ytm_error = (w @ ytm - self.benchmark_ytm) / self.benchmark_ytm
         dur_error = (w @ dur - self.benchmark_dur) / self.benchmark_dur
-        mat_error = (w @ mat - self.benchmark_maturity) / self.benchmark_maturity
+        mat_error = (
+            (w @ mat - self.benchmark_maturity) / self.benchmark_maturity
+        )
         region_error = w @ region_matrix - bench_region_vec
         cost_impact = w @ costs
 
-        # Fonction objectif : minimiser la tracking error + les coûts de transaction
+        # Objectif : minimiser la tracking error + les coûts de transaction
         objective = cp.Minimize(
             config.lambda_ytm * cp.square(ytm_error) +
             config.lambda_dur * cp.square(dur_error) +
@@ -156,26 +181,38 @@ class ImprovedBondOptimizer:
         country_counts = selected_bonds['Country'].value_counts()
         for country, count in country_counts.items():
             country_mask = (selected_bonds['Country'] == country).values
-            constraints.append(cp.sum(w[country_mask]) <= config.max_country_weight)
+            constraints.append(
+                cp.sum(w[country_mask]) <= config.max_country_weight
+            )
 
-        # Contraintes régionales (limites strictes avec tolérance)
+        # Contraintes Régionales (Limites strictes avec tolérance)
         for i, region in enumerate(self.regions):
             bench_weight = bench_region_vec[i]
             region_mask = region_matrix[:, i]
-            max_possible_region_weight = np.sum(region_mask) * config.max_weight
+            max_possible_region_weight = (
+                np.sum(region_mask) * config.max_weight
+            )
 
-            if max_possible_region_weight < (bench_weight - config.region_tolerance):
+            if max_possible_region_weight < (
+                bench_weight - config.region_tolerance
+            ):
                 if debug:
-                    print(f"DEBUG: Skip contrainte région {region} (infaisable).")
+                    print(
+                        f"DEBUG: Skip contrainte région {region} (infaisable)."
+                    )
                 continue
 
             if bench_weight > 0.01:
                 constraints.extend([
-                    w @ region_matrix[:, i] >= max(0, bench_weight - config.region_tolerance),
-                    w @ region_matrix[:, i] <= min(1.0, bench_weight + config.region_tolerance)
+                    w @ region_matrix[:, i] >= max(
+                        0, bench_weight - config.region_tolerance
+                    ),
+                    w @ region_matrix[:, i] <= min(
+                        1.0, bench_weight + config.region_tolerance
+                    )
                 ])
 
-        # Résolution du problème
+        # Résolution
         problem = cp.Problem(objective, constraints)
 
         try:
@@ -199,14 +236,13 @@ class ImprovedBondOptimizer:
         raw_weights = w.value
         raw_weights[raw_weights < config.min_weight] = 0
 
+        # Tri et conservation du Top N
         top_indices = np.argsort(raw_weights)[-num_bonds:]
         mask = np.zeros(n, dtype=bool)
         mask[top_indices] = True
 
         final_weights = np.zeros(n)
         final_weights[mask] = raw_weights[mask]
-
-        # Renormalisation
         final_weights = final_weights / final_weights.sum()
 
         # Construction du résultat
@@ -269,9 +305,10 @@ class ImprovedBondOptimizer:
 
     def generate_summary_sheet(self, result: Dict) -> pd.DataFrame:
         """
-        Génère une feuille de résumé avec comparaison precise (e-15).
+        Génère une feuille de résumé avec comparaison haute précision (e-15).
+        Inclut les métriques globales et régionales.
         """
-        # Métriques globales (pondérées)
+        # 1. Métriques globales (pondérées)
         metrics_data = [
             {
                 'Metric': 'Yield (YTM %)',
@@ -300,7 +337,7 @@ class ImprovedBondOptimizer:
             }
         ]
 
-        # Métriques régionales
+        # 2. Métriques régionales
         for region in self.regions:
             metrics_data.append({
                 'Metric': f'Region: {region}',
@@ -308,11 +345,18 @@ class ImprovedBondOptimizer:
                 'Portfolio': result['portfolio_regions'].get(region, 0.0),
             })
 
+        # Création DataFrame
         summary_df = pd.DataFrame(metrics_data)
 
-        summary_df['Difference (e-15)'] = summary_df['Portfolio'] - summary_df['Benchmark']
+        # Calcul de la différence avec précision maximale
+        summary_df['Difference (e-15)'] = (
+            summary_df['Portfolio'] - summary_df['Benchmark']
+        )
 
-        summary_df = summary_df[['Metric', 'Benchmark', 'Portfolio', 'Difference (e-15)']]
+        # Organisation des colonnes
+        summary_df = summary_df[[
+            'Metric', 'Benchmark', 'Portfolio', 'Difference (e-15)'
+        ]]
 
         return summary_df
 
@@ -326,7 +370,7 @@ if __name__ == "__main__":
     optimizer.selection_pool = optimizer.data[
         ~optimizer.data['Country'].isin(['Russia', 'Israel']) &
         (optimizer.data['Liquidity_Score'] >= 3)
-        ].copy()
+    ].copy()
 
     config = OptimizationConfig(
         lambda_ytm=1.0,
@@ -339,7 +383,9 @@ if __name__ == "__main__":
         region_tolerance=0.0000000
     )
 
-    result = optimizer.optimize_portfolio(num_bonds=350, config=config, debug=False)
+    result = optimizer.optimize_portfolio(
+        num_bonds=350, config=config, debug=False
+    )
 
     df_composition = optimizer.generate_report(result)
     df_summary = optimizer.generate_summary_sheet(result)
