@@ -114,7 +114,8 @@ class PortfolioValidatorV2:
     def run_lambda_sensitivity_test(self, target_n=400,
                                     param_name='lambda_region',
                                     values=[1.0, 10.0, 50.0, 100.0, 500.0]):
-        """Test 2 : Analyse de sensibilité des paramètres lambda pour poids de la region dans l'opti."""
+        """Test 2 : Analyse de sensibilité des paramètres lambda pour poids de
+        la region dans l'opti."""
         print(f"\n[Test 2] Analyse de sensibilité pour '{param_name}'...")
 
         results = []
@@ -198,7 +199,7 @@ class PortfolioValidatorV2:
             'synthetic_bond_data.csv', 'country_liquidity_costs.csv'
         )
 
-        # Filtrage brutal : Suppression des 3 premières régions
+        # Filtrage brutal : suppression des 3 premières régions
         regions = list(crippled_optimizer.regions)
         excluded = regions[:3]
         print(f"   Régions exclues : {excluded}")
