@@ -77,12 +77,12 @@ class PortfolioValidatorV2:
         color = 'tab:blue'
         ax1.set_xlabel("Nombre d'obligations (N)")
         ax1.set_ylabel(
-            'Valeur Objectif (Erreur Totale)',
+            'Valeur objectif (erreur totale)',
             color=color, fontweight='bold'
         )
         ax1.plot(
             df['N'], df['Objective_Value'],
-            color=color, marker='o', linewidth=2, label='Erreur Totale'
+            color=color, marker='o', linewidth=2, label='Erreur totale'
         )
         ax1.tick_params(axis='y', labelcolor=color)
         ax1.grid(True, alpha=0.3)
@@ -90,7 +90,7 @@ class PortfolioValidatorV2:
         ax2 = ax1.twinx()
         color = 'tab:red'
         ax2.set_ylabel(
-            'Déviation Régionale Max (%)',
+            'Déviation régionale max (%)',
             color=color, fontweight='bold'
         )
         ax2.plot(
@@ -104,94 +104,16 @@ class PortfolioValidatorV2:
             label='Tolérance 1%'
         )
 
-        plt.title('Frontière Efficiente V2 : Taille du Portefeuille vs Qualité')
+        plt.title('Frontière efficiente V2 : taille du portefeuille vs qualité')
         fig.legend(loc="upper right", bbox_to_anchor=(0.85, 0.85))
         plt.tight_layout()
         plt.savefig('test_v2_frontier.png')
         print("Sauvegardé 'test_v2_frontier.png'")
         return df
 
-    def run_lambda_sensitivity_test(self, target_n=400,
-                                    param_name='lambda_region',
-                                    values=[1.0, 10.0, 50.0, 100.0, 500.0]):
-        """Test 2 : Analyse de sensibilité des paramètres lambda pour poids de
-        la region dans l'opti."""
-        print(f"\n[Test 2] Analyse de sensibilité pour '{param_name}'...")
-
-        results = []
-
-        for val in tqdm(values, desc="Test des Lambdas"):
-            # Clonage de la config et mise à jour du paramètre
-            current_config = OptimizationConfig(
-                lambda_ytm=self.base_config.lambda_ytm,
-                lambda_dur=self.base_config.lambda_dur,
-                lambda_maturity=self.base_config.lambda_maturity,
-                lambda_region=self.base_config.lambda_region,
-                lambda_cost=self.base_config.lambda_cost,
-                max_weight=self.base_config.max_weight,
-                max_country_weight=self.base_config.max_country_weight,
-                region_tolerance=self.base_config.region_tolerance
-            )
-
-            setattr(current_config, param_name, float(val))
-
-            try:
-                res = self.optimizer.optimize_portfolio(
-                    num_bonds=target_n, config=current_config
-                )
-
-                te = res['tracking_error']
-
-                max_reg_dev = 0
-                for r, weight in res['portfolio_regions'].items():
-                    bench = self.optimizer.benchmark_regions.get(r, 0)
-                    if abs(weight - bench) > max_reg_dev:
-                        max_reg_dev = abs(weight - bench)
-
-                results.append({
-                    'Lambda_Value': val,
-                    'Objective_Value': res['objective_value'],
-                    'Dur_Error': abs(te['duration']),
-                    'Max_Region_Dev_Pct': max_reg_dev * 100,
-                    'Cost_Savings': te['cost_savings']
-                })
-            except Exception as e:
-                print(f"Erreur avec lambda={val} : {e}")
-
-        df = pd.DataFrame(results)
-
-        fig, ax1 = plt.subplots(figsize=(10, 6))
-
-        if 'region' in param_name:
-            y_metric = 'Max_Region_Dev_Pct'
-            y_label = 'Déviation Régionale Max (%)'
-            color = 'tab:purple'
-        elif 'dur' in param_name:
-            y_metric = 'Dur_Error'
-            y_label = "Erreur de Duration (Années)"
-            color = 'tab:green'
-        else:
-            y_metric = 'Objective_Value'
-            y_label = 'Valeur Objectif'
-            color = 'black'
-
-        ax1.set_xlabel(f'{param_name} (Échelle Log)')
-        ax1.set_ylabel(y_label, color=color, fontweight='bold')
-        ax1.plot(
-            df['Lambda_Value'], df[y_metric],
-            color=color, marker='o', linewidth=2
-        )
-        ax1.tick_params(axis='y', labelcolor=color)
-        ax1.set_xscale('log')
-        ax1.grid(True, alpha=0.3)
-
-        plt.title(f'Impact de {param_name} sur la qualité du portefeuille')
-        plt.tight_layout()
-        plt.savefig(f'test_v2_sensitivity_{param_name}.png')
-        print(f"Sauvegardé 'test_v2_sensitivity_{param_name}.png'")
 
     def run_stress_test_universe_scarcity(self):
-        """Test 3 : Stress test - rareté de l'univers d'investissement."""
+        """Test 2 : Stress test - rareté de l'univers d'investissement."""
         print("\n[Test 3] Stress test : rareté de l'univers...")
 
         # Instance temporaire pour le test
@@ -232,7 +154,7 @@ class PortfolioValidatorV2:
             print(f"   -> EXCEPTION : {e}")
 
     def run_sanity_check_holdings(self):
-        """Test 4 : Contrôle qualité des positions (poids min/max, etc)."""
+        """Test 3 : Contrôle qualité des positions (poids min/max, etc)."""
         print("\n[Test 4] Contrôle qualité des positions...")
 
         res = self.optimizer.optimize_portfolio(
@@ -276,7 +198,7 @@ class PortfolioValidatorV2:
 
     def run_determinism_test(self):
         """
-        Test 5 : Vérification du déterminisme
+        Test 4 : Vérification du déterminisme
         (Deux exécutions donnent le meme résultat EXACT).
         """
         print("\n[Test 5] Vérification du déterminisme...")
@@ -314,12 +236,6 @@ if __name__ == "__main__":
     validator = PortfolioValidatorV2()
 
     validator.run_frontier_analysis(min_n=50, max_n=500, step=50)
-
-    validator.run_lambda_sensitivity_test(
-        target_n=400,
-        param_name='lambda_region',
-        values=[1, 10, 50, 100, 500]
-    )
 
     validator.run_stress_test_universe_scarcity()
     validator.run_sanity_check_holdings()

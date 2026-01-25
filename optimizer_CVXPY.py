@@ -10,7 +10,7 @@ Ce script permet de construire un portefeuille obligataire optimisé qui minimis
 la tracking error par rapport à un indice de référence (benchmark), tout en
 réduisant considérablement le nombre de bonds à trader.
 
-Il utilise la programmation convexe pour aligner :
+On utilise la programmation convexe pour aligner :
 1. Duration
 2. YTM
 3. Maturité
@@ -300,7 +300,7 @@ class ImprovedBondOptimizer:
             'Liquidity Score': bonds['Liquidity_Score'].values
         })
 
-        portfolio = portfolio.sort_values('Weight (%)', ascending=False)
+        portfolio = portfolio.sort_values('weight (%)', ascending=False)
         return portfolio
 
     def generate_summary_sheet(self, result: Dict) -> pd.DataFrame:
@@ -316,22 +316,22 @@ class ImprovedBondOptimizer:
                 'Portfolio': result['portfolio_ytm'],
             },
             {
-                'Metric': 'Duration (Years)',
+                'Metric': 'Duration (years)',
                 'Benchmark': self.benchmark_dur,
                 'Portfolio': result['portfolio_dur'],
             },
             {
-                'Metric': 'Maturity (Years)',
+                'Metric': 'Maturity (years)',
                 'Benchmark': self.benchmark_maturity,
                 'Portfolio': result['portfolio_maturity'],
             },
             {
-                'Metric': 'Execution Cost (bps)',
+                'Metric': 'Execution cost (bps)',
                 'Benchmark': self.benchmark_cost,
                 'Portfolio': result['portfolio_cost'],
             },
             {
-                'Metric': 'Liquidity Score (Avg)',
+                'Metric': 'Liquidity score (avg)',
                 'Benchmark': self.benchmark_liquidity,
                 'Portfolio': result['portfolio_liquidity'],
             }
